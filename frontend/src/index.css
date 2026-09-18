@@ -1,0 +1,259 @@
+@import "tailwindcss";
+
+/* ============ THEME / DESIGN TOKENS (Tailwind v4) ============ */
+@theme {
+  /* Grid Green palette */
+  --color-grid-50: #f0fdf4;
+  --color-grid-100: #dcfce7;
+  --color-grid-200: #bbf7d0;
+  --color-grid-300: #86efac;
+  --color-grid-400: #4ade80;
+  --color-grid-500: #22c55e;
+  --color-grid-600: #16a34a;
+  --color-grid-700: #15803d;
+  --color-grid-800: #166534;
+  --color-grid-900: #14532d;
+  --color-grid-950: #052e16;
+
+  /* Volt Amber palette */
+  --color-volt-50: #fffbeb;
+  --color-volt-100: #fef3c7;
+  --color-volt-200: #fde68a;
+  --color-volt-300: #fcd34d;
+  --color-volt-400: #fbbf24;
+  --color-volt-500: #f59e0b;
+  --color-volt-600: #d97706;
+  --color-volt-700: #b45309;
+  --color-volt-800: #92400e;
+  --color-volt-900: #78350f;
+  --color-volt-950: #451a03;
+
+  /* Surface Slate palette */
+  --color-surface-50: #f8fafc;
+  --color-surface-100: #f1f5f9;
+  --color-surface-200: #e2e8f0;
+  --color-surface-300: #cbd5e1;
+  --color-surface-400: #94a3b8;
+  --color-surface-500: #64748b;
+  --color-surface-600: #475569;
+  --color-surface-700: #334155;
+  --color-surface-800: #1e293b;
+  --color-surface-900: #0f172a;
+  --color-surface-950: #020617;
+
+  /* Semantic chart colors */
+  --color-chart-grid: #6366f1;
+  --color-chart-solar: #eab308;
+  --color-chart-demand: #f43f5e;
+  --color-chart-battery: #06b6d4;
+  --color-chart-charge: #10b981;
+  --color-chart-discharge: #f59e0b;
+
+  /* Typography */
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  /* Animations */
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ============ BASE STYLES ============ */
+:root {
+  --color-primary: #22c55e;
+  --color-primary-dim: #15803d;
+  --color-accent: #f59e0b;
+  --color-danger: #ef4444;
+}
+
+* {
+  border-color: var(--color-surface-200);
+}
+
+.dark * {
+  border-color: var(--color-surface-700);
+}
+
+body {
+  background-color: var(--color-surface-50);
+  color: var(--color-surface-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dark body {
+  background-color: var(--color-surface-950);
+  color: var(--color-surface-100);
+}
+
+/* ============ COMPONENT CLASSES (pure CSS, no @apply) ============ */
+.card {
+  background-color: white;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  border: 1px solid var(--color-surface-200);
+}
+.dark .card {
+  background-color: var(--color-surface-900);
+  border-color: var(--color-surface-800);
+}
+
+.card-header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-surface-100);
+}
+.dark .card-header {
+  border-bottom-color: var(--color-surface-800);
+}
+
+.card-body {
+  padding: 1rem 1.25rem;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  cursor: pointer;
+  background-color: var(--color-grid-600);
+  color: white;
+  transition: all 0.15s;
+  border: none;
+  font-size: inherit;
+}
+.btn-primary:hover {
+  background-color: var(--color-grid-700);
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+}
+.btn-primary:active {
+  background-color: var(--color-grid-800);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  background-color: var(--color-surface-100);
+  color: var(--color-surface-700);
+  border: 1px solid var(--color-surface-200);
+  transition: all 0.15s;
+  font-size: inherit;
+}
+.btn-secondary:hover {
+  background-color: var(--color-surface-200);
+}
+.dark .btn-secondary {
+  background-color: var(--color-surface-800);
+  color: var(--color-surface-300);
+  border-color: var(--color-surface-700);
+}
+.dark .btn-secondary:hover {
+  background-color: var(--color-surface-700);
+}
+
+.input-field {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  border-radius: 0.5rem;
+  background-color: white;
+  border: 1px solid var(--color-surface-300);
+  color: var(--color-surface-900);
+  transition: all 0.15s;
+}
+.input-field::placeholder {
+  color: var(--color-surface-400);
+}
+.input-field:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.25);
+  border-color: var(--color-grid-500);
+}
+.dark .input-field {
+  background-color: var(--color-surface-800);
+  border-color: var(--color-surface-600);
+  color: var(--color-surface-100);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 600;
+}
+
+.kpi-card {
+  background-color: white;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  border: 1px solid var(--color-surface-200);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.dark .kpi-card {
+  background-color: var(--color-surface-900);
+  border-color: var(--color-surface-800);
+}
+
+.skeleton {
+  border-radius: 0.25rem;
+  background-color: var(--color-surface-200);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.dark .skeleton {
+  background-color: var(--color-surface-700);
+}
+
+/* ============ SCROLLBAR ============ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-300);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-surface-400);
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--color-surface-600);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--color-surface-500);
+}
