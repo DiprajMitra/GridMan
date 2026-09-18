@@ -114,6 +114,20 @@ def _clean_and_parse_json(content: str, expected_count: int) -> List[DirectiveIn
     return parsed_items
 
 
+def _clean_credential(val: Optional[str]) -> Optional[str]:
+    """Clean credential strings by stripping whitespace and literal quotes ('' or "")."""
+    if val is None:
+        return None
+    cleaned = str(val).strip()
+    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        if len(cleaned) <= 1:
+            return None
+        cleaned = cleaned[1:-1].strip()
+    if not cleaned or cleaned.lower() in ("none", "null", "undefined", "false", '""', "''"):
+        return None
+    return cleaned
+
+
 async def interpret_operator_notes(
     notes: List[str],
     battery: BatteryInput,
@@ -136,22 +150,18 @@ async def interpret_operator_notes(
     if not notes:
         return []
 
-    # Check for configured API keys
-    gemini_key = os.getenv("GEMINI_API_KEY") or getattr(settings, "GEMINI_API_KEY", None)
-    openai_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
-    groq_key = os.getenv("GROQ_API_KEY") or getattr(settings, "GROQ_API_KEY", None)
+    # Check and clean configured API keys
+    gemini_key = _clean_credential(os.getenv("GEMINI_API_KEY")) or _clean_credential(getattr(settings, "GEMINI_API_KEY", None))
+    openai_key = _clean_credential(os.getenv("OPENAI_API_KEY")) or _clean_credential(getattr(settings, "OPENAI_API_KEY", None))
+    groq_key = _clean_credential(os.getenv("GROQ_API_KEY")) or _clean_credential(getattr(settings, "GROQ_API_KEY", None))
+    google_key = _clean_credential(os.getenv("GOOGLE_API_KEY"))
+    anthropic_key = _clean_credential(os.getenv("ANTHROPIC_API_KEY"))
 
     # Choose model
-    model = os.getenv("LLM_MODEL", getattr(settings, "LLM_MODEL", "gemini/gemini-2.5-flash"))
+    model = os.getenv("LLM_MODEL", getattr(settings, "LLM_MODEL", "gemini/gemini-3.6-flash"))
 
     # If no key is set anywhere, quickly fallback with informative notice
-    has_any_key = bool(
-        gemini_key
-        or openai_key
-        or groq_key
-        or os.getenv("GOOGLE_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-    )
+    has_any_key = bool(gemini_key or openai_key or groq_key or google_key or anthropic_key)
     if not has_any_key:
         logger.warning(
             "No LLM API keys detected in environment. Returning safe fallback directives."
@@ -159,6 +169,27 @@ async def interpret_operator_notes(
         return build_fallback_interpretations(
             notes, reason="No LLM API key configured; defaulted to safe no_op"
         )
+
+    # Determine api_key and ensure environment variable is present for litellm
+    api_key: Optional[str] = None
+    if "gemini" in model:
+        api_key = gemini_key or google_key
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+    elif "openai" in model or "gpt" in model:
+        api_key = openai_key
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
+    elif "groq" in model:
+        api_key = groq_key
+        if api_key:
+            os.environ["GROQ_API_KEY"] = api_key
+    elif "claude" in model or "anthropic" in model:
+        api_key = anthropic_key
+        if api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+    else:
+        api_key = gemini_key or openai_key or groq_key or google_key or anthropic_key
 
     user_prompt = build_user_prompt(notes, battery)
     messages = [
@@ -172,6 +203,7 @@ async def interpret_operator_notes(
             litellm.acompletion(
                 model=model,
                 messages=messages,
+                api_key=api_key,
                 temperature=getattr(settings, "LLM_TEMPERATURE", 0.0),
                 response_format=DirectiveInterpretationsEnvelope,
                 timeout=STRICT_TIMEOUT_SECONDS,

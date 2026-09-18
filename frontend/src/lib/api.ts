@@ -1,7 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { OptimizationRequest, OptimizationResponse, HealthResponse } from '../types/energy';
 
-let baseURL = 'http://localhost:8000';
+let baseURL = (import.meta.env?.VITE_API_BASE_URL as string) || 'https://gridman.onrender.com';
 let apiClient: AxiosInstance = createClient(baseURL);
 
 function createClient(url: string): AxiosInstance {
