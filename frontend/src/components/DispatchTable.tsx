@@ -66,12 +66,12 @@ export default function DispatchTable({ plan }: DispatchTableProps) {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-surface-50 dark:bg-surface-800 text-surface-500 dark:text-surface-400 text-xs">
-              <th className="px-4 py-2.5 text-left font-medium">Hour</th>
-              <th className="px-4 py-2.5 text-right font-medium">Grid (kWh)</th>
-              <th className="px-4 py-2.5 text-right font-medium">Solar (kWh)</th>
-              <th className="px-4 py-2.5 text-center font-medium">Battery Action</th>
-              <th className="px-4 py-2.5 text-right font-medium">Battery (kWh)</th>
-              <th className="px-4 py-2.5 text-right font-medium">SoC After (kWh)</th>
+              <th className="px-4 py-2.5 text-left font-medium whitespace-nowrap">Hour</th>
+              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">Grid (kWh)</th>
+              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">Solar (kWh)</th>
+              <th className="px-4 py-2.5 text-center font-medium whitespace-nowrap">Battery Action</th>
+              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">Battery (kWh)</th>
+              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">SoC After (kWh)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-surface-100 dark:divide-surface-800">
@@ -82,24 +82,24 @@ export default function DispatchTable({ plan }: DispatchTableProps) {
                   key={p.hour}
                   className={`transition-colors ${style.bg}`}
                 >
-                  <td className="px-4 py-2 font-mono text-surface-600 dark:text-surface-300">
+                  <td className="px-4 py-2 font-mono text-surface-600 dark:text-surface-300 whitespace-nowrap">
                     {formatHour(p.hour)}
                   </td>
-                  <td className="px-4 py-2 text-right font-mono text-chart-grid">
+                  <td className="px-4 py-2 text-right font-mono text-chart-grid whitespace-nowrap">
                     {p.grid_kwh.toFixed(1)}
                   </td>
-                  <td className="px-4 py-2 text-right font-mono text-chart-solar">
+                  <td className="px-4 py-2 text-right font-mono text-chart-solar whitespace-nowrap">
                     {p.solar_used_kwh.toFixed(1)}
                   </td>
                   <td className="px-4 py-2 text-center">
-                    <span className={`badge ${style.text} font-medium`}>
+                    <span className={`badge ${style.text} font-medium whitespace-nowrap inline-flex`}>
                       {style.label}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-right font-mono text-surface-600 dark:text-surface-300">
+                  <td className="px-4 py-2 text-right font-mono text-surface-600 dark:text-surface-300 whitespace-nowrap">
                     {p.battery_kwh.toFixed(1)}
                   </td>
-                  <td className="px-4 py-2 text-right font-mono text-chart-battery font-semibold">
+                  <td className="px-4 py-2 text-right font-mono text-chart-battery font-semibold whitespace-nowrap">
                     {p.battery_energy_after_kwh.toFixed(1)}
                   </td>
                 </tr>

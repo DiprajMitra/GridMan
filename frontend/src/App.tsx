@@ -125,30 +125,34 @@ export default function App() {
     <div className="min-h-screen flex flex-col">
       {/* ════════════════ TOP BAR ════════════════ */}
       <header className="sticky top-0 z-50 border-b border-surface-200 dark:border-surface-800 bg-white/80 dark:bg-surface-950/80 backdrop-blur-xl">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3 sm:gap-4">
           {/* Logo */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-grid-500 to-grid-700 flex items-center justify-center">
-              <Zap className="w-4.5 h-4.5 text-white" />
+          <div className="flex items-center gap-2.5 shrink-0 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-grid-500 to-grid-700 flex items-center justify-center shrink-0">
+              <Zap className="w-4 h-4 text-white" />
             </div>
-            <div>
-              <h1 className="text-sm font-bold text-surface-900 dark:text-surface-100 leading-tight">
+            <div className="min-w-0 hidden sm:block">
+              <h1 className="text-sm font-bold text-surface-900 dark:text-surface-100 leading-tight truncate heading-balance">
                 GridWise
               </h1>
-              <p className="text-[10px] text-surface-400 leading-tight hidden sm:block">
+              <p className="text-[10px] text-surface-400 leading-tight truncate">
                 Smart Campus Energy Optimizer
               </p>
             </div>
+            <h1 className="text-sm font-bold text-surface-900 dark:text-surface-100 leading-tight sm:hidden">
+              GridWise
+            </h1>
           </div>
 
           {/* Center controls */}
-          <div className="flex items-center gap-3 flex-1 justify-center max-w-xl">
+          <div className="flex items-center gap-3 flex-1 min-w-0 justify-center max-w-xl">
             {/* Preset Selector */}
-            <div className="relative flex-1 max-w-xs">
+            <div className="relative flex-1 min-w-0 max-w-xs">
               <select
                 value={selectedPresetId}
                 onChange={(e) => loadPreset(e.target.value)}
-                className="input-field appearance-none pr-8 text-xs cursor-pointer"
+                title={`${selectedPresetId}: ${getPresetById(selectedPresetId)?.name ?? ''}`}
+                className="input-field appearance-none pr-8 text-xs cursor-pointer truncate w-full"
               >
                 {SCENARIO_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -161,7 +165,7 @@ export default function App() {
           </div>
 
           {/* Right controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <HealthBadge />
 
             {/* Backend URL */}
@@ -183,10 +187,10 @@ export default function App() {
                       type="url"
                       value={backendUrl}
                       onChange={(e) => setBackendUrl(e.target.value)}
-                      className="input-field text-xs font-mono flex-1"
+                      className="input-field text-xs font-mono flex-1 min-w-0"
                       placeholder="http://localhost:8000"
                     />
-                    <button onClick={applyUrl} className="btn-primary text-xs px-3 py-1.5">
+                    <button onClick={applyUrl} className="btn-primary text-xs px-3 py-1.5 shrink-0">
                       Set
                     </button>
                   </div>

@@ -236,6 +236,35 @@ body {
   background-color: var(--color-surface-700);
 }
 
+/* ============ OVERFLOW / OVERLAP GUARDS ============ */
+/* Engineering dashboard: numbers never wrap, headings never overlap.
+   These rules are the safety net below every component. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+.heading-balance {
+  text-wrap: balance;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.row > * { min-width: 0; }
+.stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.stack > * { min-width: 0; }
+.num-cell {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+}
+
 /* ============ SCROLLBAR ============ */
 ::-webkit-scrollbar {
   width: 6px;

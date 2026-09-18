@@ -42,12 +42,12 @@ export default function SummaryCards({
           { icon: DollarSign, label: 'Total Cost', color: 'text-chart-solar' },
           { icon: BatteryFull, label: 'Battery Neutrality', color: 'text-chart-battery' },
         ].map(({ icon: Icon, label, color }) => (
-          <div key={label} className="kpi-card opacity-60">
-            <div className="flex items-center gap-2">
-              <Icon className={`w-4 h-4 ${color}`} />
-              <span className="text-xs font-medium text-surface-400">{label}</span>
+          <div key={label} className="kpi-card opacity-60 min-w-0">
+            <div className="row min-w-0">
+              <Icon className={`w-4 h-4 ${color} shrink-0`} />
+              <span className="text-xs font-medium text-surface-400 truncate">{label}</span>
             </div>
-            <span className="text-xl font-bold text-surface-300 dark:text-surface-600 font-mono">
+            <span className="text-xl font-bold text-surface-300 dark:text-surface-600 font-mono truncate">
               —
             </span>
           </div>
@@ -98,17 +98,17 @@ export default function SummaryCards({
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {kpis.map(({ icon: Icon, label, value, color, sub }) => (
-        <div key={label} className="kpi-card animate-slide-up">
-          <div className="flex items-center gap-2">
-            <Icon className={`w-4 h-4 ${color}`} />
-            <span className="text-xs font-medium text-surface-500 dark:text-surface-400">
+        <div key={label} className="kpi-card animate-slide-up min-w-0">
+          <div className="row min-w-0">
+            <Icon className={`w-4 h-4 ${color} shrink-0`} />
+            <span className="text-xs font-medium text-surface-500 dark:text-surface-400 truncate">
               {label}
             </span>
           </div>
-          <span className={`text-xl font-bold font-mono ${color}`}>
+          <span className={`text-xl font-bold font-mono ${color} truncate block`}>
             {value}
           </span>
-          <span className="text-[10px] text-surface-400">{sub}</span>
+          <span className="text-[10px] text-surface-400 truncate block">{sub}</span>
         </div>
       ))}
     </div>

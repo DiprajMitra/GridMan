@@ -121,10 +121,10 @@ export default function DirectiveInspector({
                       {d.applies ? 'Active Constraint' : 'Ignored Distractor'}
                     </span>
                   </div>
-                  <p className="text-sm text-surface-600 dark:text-surface-400 italic truncate">
+                  <p className="text-sm text-surface-600 dark:text-surface-400 italic break-words">
                     "{note}"
                   </p>
-                  <p className="text-sm text-surface-700 dark:text-surface-300 mt-1">
+                  <p className="text-sm text-surface-700 dark:text-surface-300 mt-1 break-words">
                     {d.explanation}
                   </p>
                 </div>

@@ -70,7 +70,7 @@ export default function BatterySocChart({
       </div>
       <div className="card-body">
         <ResponsiveContainer width="100%" height={200}>
-          <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
             <defs>
               <linearGradient id={socGradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="var(--color-chart-battery)" stopOpacity={0.3} />
@@ -90,11 +90,13 @@ export default function BatterySocChart({
             <YAxis
               domain={[0, capacity]}
               tick={{ fontSize: 10, fill: 'var(--color-surface-400)' }}
+              width={48}
               label={{
                 value: 'kWh',
                 angle: -90,
-                position: 'insideLeft',
-                style: { fontSize: 10, fill: 'var(--color-surface-400)' },
+                position: 'insideTopLeft',
+                offset: 14,
+                style: { fontSize: 10, fill: 'var(--color-surface-400)', textAnchor: 'middle' },
               }}
             />
             <Tooltip

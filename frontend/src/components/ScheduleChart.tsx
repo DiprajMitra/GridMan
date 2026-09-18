@@ -59,7 +59,7 @@ export default function ScheduleChart({ plan, inputHours }: ScheduleChartProps) 
       </div>
       <div className="card-body">
         <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <BarChart data={chartData} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--color-surface-200)" opacity={0.5} />
             <XAxis
               dataKey="hour"
@@ -68,11 +68,13 @@ export default function ScheduleChart({ plan, inputHours }: ScheduleChartProps) 
             />
             <YAxis
               tick={{ fontSize: 10, fill: 'var(--color-surface-400)' }}
+              width={48}
               label={{
                 value: 'kWh',
                 angle: -90,
-                position: 'insideLeft',
-                style: { fontSize: 10, fill: 'var(--color-surface-400)' },
+                position: 'insideTopLeft',
+                offset: 18,
+                style: { fontSize: 10, fill: 'var(--color-surface-400)', textAnchor: 'middle' },
               }}
             />
             <Tooltip
@@ -83,6 +85,7 @@ export default function ScheduleChart({ plan, inputHours }: ScheduleChartProps) 
                 fontSize: '12px',
                 color: 'var(--color-surface-100)',
               }}
+              wrapperStyle={{ outline: 'none' }}
             />
             <Legend
               wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}

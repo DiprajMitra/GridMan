@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { BatteryConfig } from '../types/energy';
 import { Battery, Zap } from 'lucide-react';
 
@@ -13,6 +14,7 @@ function NumericInput({
   unit,
   min = 0,
   max = 1000,
+  leadingIcon,
 }: {
   label: string;
   value: number;
@@ -20,20 +22,26 @@ function NumericInput({
   unit: string;
   min?: number;
   max?: number;
+  leadingIcon?: ReactNode;
 }) {
   return (
-    <div>
-      <label className="block text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
+    <div className="min-w-0">
+      <label className="block text-xs font-medium text-surface-500 dark:text-surface-400 mb-1 truncate">
         {label}
       </label>
-      <div className="relative">
+      <div className="relative min-w-0">
+        {leadingIcon && (
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none">
+            {leadingIcon}
+          </span>
+        )}
         <input
           type="number"
           value={value}
           onChange={(e) => onChange(Math.max(min, Math.min(max, Number(e.target.value))))}
           min={min}
           max={max}
-          className="input-field pr-12 text-right font-mono"
+          className={`input-field text-right font-mono min-w-0 w-full ${leadingIcon ? 'pl-7' : ''} pr-10`}
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-surface-400 pointer-events-none">
           {unit}
@@ -102,24 +110,20 @@ export default function BatterySettingsCard({
           unit="kWh"
         />
         <div className="col-span-2 grid grid-cols-2 gap-3">
-          <div className="flex items-start gap-1.5">
-            <Zap className="w-3.5 h-3.5 mt-5 text-chart-charge shrink-0" />
-            <NumericInput
-              label="Max Charge/hr"
-              value={config.max_charge_kwh_per_hour}
-              onChange={(v) => update('max_charge_kwh_per_hour', v)}
-              unit="kWh"
-            />
-          </div>
-          <div className="flex items-start gap-1.5">
-            <Zap className="w-3.5 h-3.5 mt-5 text-chart-discharge shrink-0" />
-            <NumericInput
-              label="Max Discharge/hr"
-              value={config.max_discharge_kwh_per_hour}
-              onChange={(v) => update('max_discharge_kwh_per_hour', v)}
-              unit="kWh"
-            />
-          </div>
+          <NumericInput
+            label="Max Charge/hr"
+            value={config.max_charge_kwh_per_hour}
+            onChange={(v) => update('max_charge_kwh_per_hour', v)}
+            unit="kWh"
+            leadingIcon={<Zap className="w-3.5 h-3.5 text-chart-charge" />}
+          />
+          <NumericInput
+            label="Max Discharge/hr"
+            value={config.max_discharge_kwh_per_hour}
+            onChange={(v) => update('max_discharge_kwh_per_hour', v)}
+            unit="kWh"
+            leadingIcon={<Zap className="w-3.5 h-3.5 text-chart-discharge" />}
+          />
         </div>
       </div>
     </div>

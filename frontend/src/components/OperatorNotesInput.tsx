@@ -41,8 +41,8 @@ export default function OperatorNotesInput({
 
       <div className="space-y-2">
         {notes.map((note, index) => (
-          <div key={index} className="flex gap-2 animate-fade-in">
-            <div className="flex items-center justify-center w-6 h-9 text-xs font-mono font-bold text-surface-400 dark:text-surface-500">
+          <div key={index} className="flex gap-2 animate-fade-in min-w-0">
+            <div className="flex items-center justify-center w-6 h-9 text-xs font-mono font-bold text-surface-400 dark:text-surface-500 shrink-0">
               {index + 1}
             </div>
             <input
@@ -50,11 +50,11 @@ export default function OperatorNotesInput({
               value={note}
               onChange={(e) => updateNote(index, e.target.value)}
               placeholder={`Operator directive ${index + 1}…`}
-              className="input-field flex-1"
+              className="input-field flex-1 min-w-0"
             />
             <button
               onClick={() => removeNote(index)}
-              className="p-2 rounded-lg text-surface-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+              className="p-2 rounded-lg text-surface-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer shrink-0"
               title="Remove note"
             >
               <Trash2 className="w-4 h-4" />

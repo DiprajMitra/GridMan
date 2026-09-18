@@ -40,9 +40,9 @@ export default function HourlyProfileTable({
       </div>
 
       {/* Mini sparkline preview */}
-      <div className="flex items-end gap-px h-12 px-1">
+      <div className="flex items-end gap-px h-12 px-1 min-w-0">
         {hours.map((h, i) => (
-          <div key={i} className="flex-1 flex flex-col justify-end gap-px" title={`${formatHour(h.hour)}: ${h.demand_kwh} kWh demand, ${h.solar_kwh} kWh solar`}>
+          <div key={i} className="flex-1 min-w-[3px] flex flex-col justify-end gap-px" title={`${formatHour(h.hour)}: ${h.demand_kwh} kWh demand, ${h.solar_kwh} kWh solar`}>
             <div
               className="w-full rounded-t-sm"
               style={{
@@ -64,12 +64,12 @@ export default function HourlyProfileTable({
           </div>
         ))}
       </div>
-      <div className="flex justify-between text-[10px] text-surface-400 px-1">
-        <span>12AM</span>
-        <span>6AM</span>
-        <span>12PM</span>
-        <span>6PM</span>
-        <span>11PM</span>
+      <div className="flex justify-between text-[10px] text-surface-400 px-1 gap-1 min-w-0">
+        <span className="shrink-0">12AM</span>
+        <span className="shrink-0">6AM</span>
+        <span className="shrink-0">12PM</span>
+        <span className="shrink-0">6PM</span>
+        <span className="shrink-0">11PM</span>
       </div>
 
       {/* Scrollable table */}
@@ -93,39 +93,39 @@ export default function HourlyProfileTable({
                 key={h.hour}
                 className="hover:bg-surface-50 dark:hover:bg-surface-800/50 transition-colors"
               >
-                <td className="px-2 py-1 font-mono text-surface-600 dark:text-surface-400">
+                <td className="px-2 py-1 font-mono text-surface-600 dark:text-surface-400 whitespace-nowrap">
                   {formatHour(h.hour)}
                 </td>
-                <td className="px-1 py-0.5">
+                <td className="px-1 py-0.5 min-w-0">
                   <input
                     type="number"
                     value={h.demand_kwh}
                     onChange={(e) =>
                       updateHour(i, 'demand_kwh', Number(e.target.value))
                     }
-                    className="w-full text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
+                    className="w-full min-w-0 text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
                     min={0}
                   />
                 </td>
-                <td className="px-1 py-0.5">
+                <td className="px-1 py-0.5 min-w-0">
                   <input
                     type="number"
                     value={h.solar_kwh}
                     onChange={(e) =>
                       updateHour(i, 'solar_kwh', Number(e.target.value))
                     }
-                    className="w-full text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
+                    className="w-full min-w-0 text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
                     min={0}
                   />
                 </td>
-                <td className="px-1 py-0.5">
+                <td className="px-1 py-0.5 min-w-0">
                   <input
                     type="number"
                     value={h.tariff_bdt_per_kwh}
                     onChange={(e) =>
                       updateHour(i, 'tariff_bdt_per_kwh', Number(e.target.value))
                     }
-                    className="w-full text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
+                    className="w-full min-w-0 text-right font-mono bg-transparent border-0 focus:outline-none focus:bg-surface-100 dark:focus:bg-surface-700 rounded px-1 py-0.5"
                     min={0}
                     step={0.5}
                   />
@@ -137,16 +137,16 @@ export default function HourlyProfileTable({
       </div>
 
       {/* Legend */}
-      <div className="flex gap-4 text-[10px] text-surface-400">
-        <span className="flex items-center gap-1">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-surface-400 min-w-0">
+        <span className="flex items-center gap-1 shrink-0">
           <span className="w-2 h-2 rounded-full bg-chart-demand" />
           Demand (kWh)
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1 shrink-0">
           <span className="w-2 h-2 rounded-full bg-chart-solar" />
           Solar (kWh)
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1 shrink-0">
           <span className="w-2 h-2 rounded-full bg-surface-400" />
           Tariff (BDT)
         </span>
