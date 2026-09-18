@@ -2,6 +2,7 @@
 
 Persists scenario inputs, LLM directive interpretations, optimized schedules,
 and performance metrics to Supabase PostgreSQL without blocking API responses.
+Handles empty strings, quoted strings, and missing credentials gracefully.
 """
 
 from __future__ import annotations
@@ -32,12 +33,13 @@ OPTIMIZATION_LOGS_DDL = """
 CREATE TABLE IF NOT EXISTS optimization_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scenario_id TEXT NOT NULL,
-    input_payload JSONB NOT NULL,
+    operator_notes JSONB NOT NULL,
     directive_interpretation JSONB NOT NULL,
     hourly_plan JSONB NOT NULL,
+    total_grid_kwh NUMERIC(12, 4) NOT NULL,
     total_cost_bdt NUMERIC(12, 4) NOT NULL,
     peak_grid_kwh NUMERIC(10, 4) NOT NULL,
-    execution_time_ms NUMERIC(10, 2) NOT NULL,
+    plan_summary TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -46,39 +48,66 @@ CREATE INDEX IF NOT EXISTS idx_optimization_logs_scenario_id ON optimization_log
 CREATE INDEX IF NOT EXISTS idx_optimization_logs_created_at ON optimization_logs (created_at DESC);
 """
 
-# Cached singleton client instance
+# Cached singleton client instance and state flag
 _supabase_client: Optional[Client] = None
+_client_init_attempted: bool = False
+
+
+def _clean_credential(val: Optional[str]) -> Optional[str]:
+    """Clean credential strings by stripping whitespace and literal quotes ('' or "")."""
+    if val is None:
+        return None
+    cleaned = str(val).strip()
+    # Strip enclosing single or double quotes
+    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        if len(cleaned) <= 1:
+            return None
+        cleaned = cleaned[1:-1].strip()
+    if not cleaned or cleaned.lower() in ("none", "null", "undefined", "false", '""', "''"):
+        return None
+    return cleaned
 
 
 def get_supabase_client() -> Optional[Client]:
-    """Retrieve or initialize the Supabase client using environment or configuration settings.
+    """Retrieve or initialize the Supabase client safely.
 
-    Returns None gracefully if SUPABASE_URL or SUPABASE_SERVICE_KEY is not set.
+    Returns None gracefully if SUPABASE_URL or SUPABASE_SERVICE_KEY is unset, empty (""),
+    whitespace-only, or invalid. Never raises uncaught exceptions.
     """
-    global _supabase_client
+    global _supabase_client, _client_init_attempted
     if _supabase_client is not None:
         return _supabase_client
+    if _client_init_attempted:
+        return None
 
-    url = (
-        os.getenv("SUPABASE_URL")
-        or getattr(settings, "SUPABASE_URL", None)
-    )
-    key = (
-        os.getenv("SUPABASE_SERVICE_KEY")
-        or getattr(settings, "SUPABASE_SERVICE_KEY", None)
-        or os.getenv("SUPABASE_KEY")
-        or getattr(settings, "SUPABASE_KEY", None)
+    # Retrieve and clean URL
+    env_url = os.getenv("SUPABASE_URL")
+    url = _clean_credential(env_url) if env_url is not None else _clean_credential(getattr(settings, "SUPABASE_URL", None))
+
+    # Retrieve and clean Key
+    env_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    key = _clean_credential(env_key) if env_key is not None else (
+        _clean_credential(getattr(settings, "SUPABASE_SERVICE_KEY", None))
+        or _clean_credential(getattr(settings, "SUPABASE_KEY", None))
     )
 
     if not url or not key:
-        logger.debug("Supabase credentials not configured; persistence disabled.")
+        logger.debug("Supabase credentials not configured or empty; persistence disabled.")
+        _client_init_attempted = True
+        return None
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        logger.warning("Supabase URL '%s' is invalid; persistence disabled.", url)
+        _client_init_attempted = True
         return None
 
     try:
         _supabase_client = create_client(url, key)
+        _client_init_attempted = True
         return _supabase_client
     except Exception as exc:
         logger.warning("Failed to initialize Supabase client: %s", exc)
+        _client_init_attempted = True
         return None
 
 
@@ -100,7 +129,10 @@ async def log_optimization_run(
     hourly_plan: Union[List[HourlyPlanEntry], List[Dict[str, Any]]],
     total_cost_bdt: float,
     peak_grid_kwh: float,
-    execution_time_ms: float,
+    execution_time_ms: float = 0.0,
+    total_grid_kwh: float = 0.0,
+    plan_summary: Optional[str] = None,
+    operator_notes: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Persist an optimization run record into Supabase asynchronously.
 
@@ -108,48 +140,71 @@ async def log_optimization_run(
     and network exceptions are safely trapped so logging failures never affect
     the API response.
 
-    Parameters
-    ----------
-    scenario_id : str
-        The unique scenario identifier.
-    input_payload : OptimizeEnergyRequest | dict
-        The full input payload sent by the user or test harness.
-    directive_interpretation : list[DirectiveInterpretation] | list[dict]
-        Extracted directives and guardrail outputs.
-    hourly_plan : list[HourlyPlanEntry] | list[dict]
-        The 24-hour dispatch schedule produced by the solver.
-    total_cost_bdt : float
-        Total operational cost in BDT.
-    peak_grid_kwh : float
-        Peak hourly grid import in kWh.
-    execution_time_ms : float
-        Total execution latency in milliseconds.
-
-    Returns
-    -------
-    dict or None
-        Inserted row data if successful, None otherwise.
+    Supports both standard deployed schema (operator_notes, total_grid_kwh, plan_summary)
+    and legacy fallback schema (input_payload, execution_time_ms).
     """
     try:
         client = get_supabase_client()
         if client is None:
             return None
 
-        record = {
+        # Extract operator_notes if not explicitly passed
+        if operator_notes is None:
+            if isinstance(input_payload, dict):
+                operator_notes = input_payload.get("operator_notes", [])
+            elif hasattr(input_payload, "operator_notes"):
+                operator_notes = input_payload.operator_notes
+            else:
+                operator_notes = []
+
+        # Calculate total_grid_kwh if not provided
+        if total_grid_kwh <= 0.0 and hourly_plan:
+            calc_grid = 0.0
+            for entry in hourly_plan:
+                if isinstance(entry, dict):
+                    calc_grid += float(entry.get("grid_kwh", entry.get("grid_import_kwh", 0.0)))
+                elif hasattr(entry, "grid_kwh"):
+                    calc_grid += float(entry.grid_kwh)
+                elif hasattr(entry, "grid_import_kwh"):
+                    calc_grid += float(entry.grid_import_kwh)
+            if calc_grid > 0.0:
+                total_grid_kwh = calc_grid
+
+        # Primary record matching the deployed Supabase table schema
+        primary_record = {
             "scenario_id": str(scenario_id),
-            "input_payload": _to_json_compatible(input_payload),
+            "operator_notes": _to_json_compatible(operator_notes),
             "directive_interpretation": _to_json_compatible(directive_interpretation),
             "hourly_plan": _to_json_compatible(hourly_plan),
-            "total_cost_bdt": float(total_cost_bdt),
-            "peak_grid_kwh": float(peak_grid_kwh),
-            "execution_time_ms": float(execution_time_ms),
+            "total_grid_kwh": round(float(total_grid_kwh), 4),
+            "total_cost_bdt": round(float(total_cost_bdt), 4),
+            "peak_grid_kwh": round(float(peak_grid_kwh), 4),
+            "plan_summary": str(plan_summary or ""),
         }
 
-        # Offload synchronous PostgREST call to thread pool to preserve event-loop concurrency
-        result = await asyncio.to_thread(
-            lambda: client.table("optimization_logs").insert(record).execute()
-        )
-        return result.data if hasattr(result, "data") else None
+        try:
+            result = await asyncio.to_thread(
+                lambda: client.table("optimization_logs").insert(primary_record).execute()
+            )
+            return result.data if hasattr(result, "data") else None
+        except Exception as insert_err:
+            err_msg = str(insert_err).lower()
+            # If the database table has an alternative schema (e.g. input_payload, execution_time_ms)
+            if "operator_notes" in err_msg or "input_payload" in err_msg or "execution_time_ms" in err_msg:
+                alt_record = {
+                    "scenario_id": str(scenario_id),
+                    "input_payload": _to_json_compatible(input_payload),
+                    "directive_interpretation": _to_json_compatible(directive_interpretation),
+                    "hourly_plan": _to_json_compatible(hourly_plan),
+                    "total_cost_bdt": round(float(total_cost_bdt), 4),
+                    "peak_grid_kwh": round(float(peak_grid_kwh), 4),
+                    "execution_time_ms": round(float(execution_time_ms), 2),
+                }
+                result = await asyncio.to_thread(
+                    lambda: client.table("optimization_logs").insert(alt_record).execute()
+                )
+                return result.data if hasattr(result, "data") else None
+            raise
 
     except Exception as exc:
         logger.warning(
@@ -175,6 +230,9 @@ async def log_optimization_result(
         total_cost_bdt=response.total_cost_bdt,
         peak_grid_kwh=response.peak_grid_kwh,
         execution_time_ms=execution_time_ms,
+        total_grid_kwh=response.total_grid_kwh,
+        plan_summary=response.plan_summary,
+        operator_notes=request.operator_notes,
     )
 
 

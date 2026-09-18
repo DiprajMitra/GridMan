@@ -386,13 +386,13 @@ To enable persistent audit trails, GridWise logs every optimization run asynchro
 CREATE TABLE IF NOT EXISTS optimization_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scenario_id TEXT NOT NULL,
-    input_payload JSONB NOT NULL,
+    operator_notes JSONB NOT NULL,
     directive_interpretation JSONB NOT NULL,
     hourly_plan JSONB NOT NULL,
-    total_grid_kwh NUMERIC NOT NULL,
-    total_cost_bdt NUMERIC NOT NULL,
-    peak_grid_kwh NUMERIC NOT NULL,
-    execution_time_ms NUMERIC NOT NULL,
+    total_grid_kwh NUMERIC(12, 4) NOT NULL,
+    total_cost_bdt NUMERIC(12, 4) NOT NULL,
+    peak_grid_kwh NUMERIC(10, 4) NOT NULL,
+    plan_summary TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

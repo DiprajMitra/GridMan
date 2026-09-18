@@ -29,8 +29,10 @@ from app.schemas.contract import (
 def reset_client_singleton():
     """Ensure singleton is reset across tests."""
     db_module._supabase_client = None
+    db_module._client_init_attempted = False
     yield
     db_module._supabase_client = None
+    db_module._client_init_attempted = False
 
 
 def test_ddl_columns_present():
@@ -39,12 +41,13 @@ def test_ddl_columns_present():
     assert "create table if not exists optimization_logs" in ddl_lower
     assert "id uuid" in ddl_lower
     assert "scenario_id text" in ddl_lower
-    assert "input_payload jsonb" in ddl_lower
+    assert "operator_notes jsonb" in ddl_lower
     assert "directive_interpretation jsonb" in ddl_lower
     assert "hourly_plan jsonb" in ddl_lower
+    assert "total_grid_kwh numeric" in ddl_lower
     assert "total_cost_bdt numeric" in ddl_lower
     assert "peak_grid_kwh numeric" in ddl_lower
-    assert "execution_time_ms numeric" in ddl_lower
+    assert "plan_summary text" in ddl_lower
     assert "created_at timestamptz" in ddl_lower
 
 
@@ -53,9 +56,44 @@ def test_get_supabase_client_none_without_keys(monkeypatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_URL", None)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_SERVICE_KEY", None)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_KEY", None)
 
     client = get_supabase_client()
     assert client is None
+
+
+def test_get_supabase_client_empty_strings(monkeypatch):
+    """Client should be None when keys are empty strings."""
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "")
+
+    client = get_supabase_client()
+    assert client is None
+
+
+def test_get_supabase_client_literal_quotes(monkeypatch):
+    """Client should be None when keys are literal quote strings '\"\"' or '\'\'\'."""
+    monkeypatch.setenv("SUPABASE_URL", '""')
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "''")
+
+    client = get_supabase_client()
+    assert client is None
+
+
+def test_get_supabase_client_whitespace_and_invalid_url(monkeypatch):
+    """Client should be None when URL is whitespace or invalid protocol."""
+    monkeypatch.setenv("SUPABASE_URL", "   ")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "valid-key")
+
+    client = get_supabase_client()
+    assert client is None
+
+    db_module._client_init_attempted = False
+    monkeypatch.setenv("SUPABASE_URL", "not-a-valid-http-url")
+    client2 = get_supabase_client()
+    assert client2 is None
 
 
 def test_get_supabase_client_with_keys(monkeypatch):
@@ -72,8 +110,15 @@ def test_get_supabase_client_with_keys(monkeypatch):
         )
 
 
-def test_log_optimization_run_unconfigured():
+def test_log_optimization_run_unconfigured(monkeypatch):
     """Should return None without error if Supabase is unconfigured."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_URL", None)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_SERVICE_KEY", None)
+    monkeypatch.setattr(db_module.settings, "SUPABASE_KEY", None)
+
     res = asyncio.run(
         log_optimization_run(
             scenario_id="TEST-01",
@@ -89,7 +134,7 @@ def test_log_optimization_run_unconfigured():
 
 
 def test_log_optimization_run_success():
-    """Should insert record and return result when client is available."""
+    """Should insert record matching deployed schema and return result."""
     mock_client = MagicMock()
     mock_table = MagicMock()
     mock_insert = MagicMock()
@@ -104,16 +149,50 @@ def test_log_optimization_run_success():
         res = asyncio.run(
             log_optimization_run(
                 scenario_id="TEST-01",
-                input_payload={"battery": {"capacity_kwh": 200}},
+                input_payload={"battery": {"capacity_kwh": 200}, "operator_notes": ["Note 1"]},
                 directive_interpretation=[{"note_index": 0, "applies": False}],
                 hourly_plan=[{"hour": 0, "grid_kwh": 30.0}],
                 total_cost_bdt=150.5,
                 peak_grid_kwh=45.0,
                 execution_time_ms=125.0,
+                total_grid_kwh=30.0,
+                plan_summary="Plan summary",
             )
         )
         assert res == [{"id": "uuid-1234", "scenario_id": "TEST-01"}]
         mock_client.table.assert_called_once_with("optimization_logs")
+
+
+def test_log_optimization_run_schema_fallback():
+    """Should fall back to alternative schema if primary schema encounters missing column."""
+    mock_client = MagicMock()
+    mock_table = MagicMock()
+    mock_insert_primary = MagicMock()
+    mock_insert_fallback = MagicMock()
+    mock_execute = MagicMock()
+
+    # Primary insert fails due to missing operator_notes in legacy schema
+    mock_insert_primary.execute.side_effect = Exception("Could not find the 'operator_notes' column")
+    mock_execute.data = [{"id": "uuid-fallback"}]
+    mock_insert_fallback.execute.return_value = mock_execute
+
+    mock_table.insert.side_effect = [mock_insert_primary, mock_insert_fallback]
+    mock_client.table.return_value = mock_table
+
+    with patch("app.db.supabase_client.get_supabase_client", return_value=mock_client):
+        res = asyncio.run(
+            log_optimization_run(
+                scenario_id="TEST-FALLBACK",
+                input_payload={"test": 1},
+                directive_interpretation=[],
+                hourly_plan=[],
+                total_cost_bdt=10.0,
+                peak_grid_kwh=5.0,
+                execution_time_ms=50.0,
+            )
+        )
+        assert res == [{"id": "uuid-fallback"}]
+        assert mock_table.insert.call_count == 2
 
 
 def test_log_optimization_run_catches_exceptions():

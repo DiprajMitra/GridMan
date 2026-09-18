@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
 
     # LLM Settings
-    LLM_MODEL: str = "gemini/gemini-2.5-flash"
+    LLM_MODEL: str = "gemini/gemini-3.6-flash"
     LLM_TIMEOUT_SECONDS: float = 4.0
     LLM_TEMPERATURE: float = 0.0
     LLM_MAX_RETRIES: int = 0
