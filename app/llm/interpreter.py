@@ -1,7 +1,8 @@
 """LLM-based structured directive interpreter for operator notes.
 
 Uses litellm for multi-provider support (Gemini, OpenAI, Anthropic, Groq, etc.)
-with strict JSON schema enforcement, a 4.0-second timeout, and safe no_op fallbacks.
+with strict JSON schema enforcement, a 4.0-second timeout, multi-key rotation
+on rate-limit errors, and safe no_op fallbacks.
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 import litellm
 from pydantic import BaseModel, Field
@@ -37,27 +40,37 @@ STRICT_TIMEOUT_SECONDS: float = 4.0
 # quota is exhausted, retries cannot succeed within the same 24h window. The
 # interpreter therefore distinguishes a per-minute/per-second "burst" 429
 # (retryable, retryDelay is sub-minute) from a daily-quota 429 (non-retryable),
-# and falls back to the deterministic parser instead of spinning.
+# and rotates to a different provider instead of just spinning on one.
+#
+# `RESOURCE_EXHAUSTED` alone is ambiguous (Google uses it for both per-minute
+# bursts AND daily limits). It only counts as "daily exhausted" when paired
+# with one of the more specific daily-quota markers.
 _DAILY_QUOTA_MARKERS = (
     "GenerateRequestsPerDayPerProjectPerModel",
     "PerDayPerProjectPerModel-FreeTier",
     "free_tier_requests",
 )
+_BILLING_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "quota_exceeded",
+    "billing",
+    "Payment Required",
+    "plan quota",
+)
 
 
 def _is_daily_quota_exhausted(message: str) -> bool:
-    """Detect Gemini free-tier daily-quota exhaustion (non-retryable within 24h)."""
+    """Detect provider daily/quota exhaustion (non-retryable within 24h or billing cycle)."""
     if not message:
         return False
-    return any(marker in message for marker in _DAILY_QUOTA_MARKERS)
+    msg = message or ""
+    has_daily = any(m in msg for m in _DAILY_QUOTA_MARKERS)
+    has_billing = any(m in msg for m in _BILLING_QUOTA_MARKERS)
+    return has_daily or has_billing
 
 
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
-    """Extract retryDelay seconds from the Gemini rate-limit error message.
-
-    Looks for the `RetryInfo.retryDelay` in the structured error response. The
-    field is emitted as e.g. `\"retryDelay\": \"32s\"` or `\"32.0225675s\"`.
-    """
+    """Extract retryDelay seconds from the Gemini rate-limit error message."""
     if not message:
         return None
     match = re.search(r"retryDelay\"\s*:\s*\"\s*([0-9]+(?:\.[0-9]+)?)\s*s", message)
@@ -75,6 +88,152 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider rotation
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# When one provider returns HTTP 429 / RESOURCE_EXHAUSTED / RateLimitError,
+# we rotate to the next configured provider instead of falling back to the
+# deterministic parser. The user requested the rotation order:
+#   GROQ  →  OPENAI  →  GEMINI
+#
+# Per-process state:
+#   - _provider_cooldowns[provider]: epoch time until which this provider is
+#     considered "in cooldown" after a recent transient 429. While in cooldown
+#     we skip the provider and try the next one. Cooldowns are short (~30 s)
+#     and self-heal.
+#   - _provider_exhausted: set of providers that have returned a non-retryable
+#     daily-quota / billing error in this process lifetime. We never try them
+#     again until the process restarts.
+
+_PROVIDER_ORDER: Tuple[str, ...] = ("groq", "openai", "gemini")
+
+# Default model per provider. Overridable via LLM_MODEL_<PROVIDER> env var.
+_DEFAULT_MODELS: Dict[str, str] = {
+    "groq": "groq/llama-3.3-70b-versatile",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini/gemini-2.0-flash",
+}
+
+# Env-var name per provider that litellm expects.
+_PROVIDER_ENV_VAR: Dict[str, str] = {
+    "groq": "GROQ_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Short cooldown after a transient 429 so we don't immediately retry the same
+# provider. Cooldown is in seconds.
+_TRANSIENT_COOLDOWN_SECONDS: float = 30.0
+
+_provider_cooldowns: Dict[str, float] = {}
+_provider_exhausted: set[str] = set()
+_rotator_lock = threading.Lock()
+
+
+def _clean_credential(val: Optional[str]) -> Optional[str]:
+    """Clean credential strings by stripping whitespace and literal quotes ('' or "")."""
+    if val is None:
+        return None
+    cleaned = str(val).strip()
+    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        if len(cleaned) <= 1:
+            return None
+        cleaned = cleaned[1:-1].strip()
+    if not cleaned or cleaned.lower() in ("none", "null", "undefined", "false", '""', "''"):
+        return None
+    return cleaned
+
+
+def _get_api_key(provider: str) -> Optional[str]:
+    """Read the configured API key for a provider from env or settings."""
+    env_name = _PROVIDER_ENV_VAR.get(provider)
+    if not env_name:
+        return None
+    env_val = os.getenv(env_name)
+    # If the env var was explicitly deleted (monkeypatch.delenv) we must NOT
+    # fall back to settings — that would resurrect a key the test deleted.
+    if env_val is not None:
+        return _clean_credential(env_val)
+    return None
+
+
+def _get_model(provider: str) -> str:
+    """Resolve the model string for a provider.
+
+    Precedence:
+      1. LLM_MODEL_<PROVIDER> env var (e.g. LLM_MODEL_GROQ)
+      2. Built-in default model for the provider
+    """
+    override = os.getenv(f"LLM_MODEL_{provider.upper()}")
+    if override:
+        return override
+    return _DEFAULT_MODELS[provider]
+
+
+def _build_provider_chain() -> List[Dict[str, str]]:
+    """Build the list of available providers in rotation order.
+
+    Excludes providers that:
+      - have no API key configured
+      - are marked as permanently exhausted in this process
+      - are currently in cooldown
+    """
+    chain: List[Dict[str, str]] = []
+    now = time.monotonic()
+    for provider in _PROVIDER_ORDER:
+        if provider in _provider_exhausted:
+            continue
+        cooldown_until = _provider_cooldowns.get(provider, 0.0)
+        if cooldown_until > now:
+            continue
+        api_key = _get_api_key(provider)
+        if not api_key:
+            continue
+        chain.append({
+            "provider": provider,
+            "model": _get_model(provider),
+            "api_key": api_key,
+            "env_var": _PROVIDER_ENV_VAR[provider],
+        })
+    return chain
+
+
+def _mark_provider_rate_limited(provider: str, message: str) -> None:
+    """Mark a provider as either transient-cooled or permanently exhausted."""
+    with _rotator_lock:
+        if _is_daily_quota_exhausted(message):
+            _provider_exhausted.add(provider)
+            logger.warning(
+                "Provider '%s' marked as permanently exhausted for this process "
+                "(daily/quota error). Will rotate to next provider.",
+                provider,
+            )
+        else:
+            _provider_cooldowns[provider] = (
+                time.monotonic() + _TRANSIENT_COOLDOWN_SECONDS
+            )
+            logger.info(
+                "Provider '%s' cooled down for %.0fs after transient 429.",
+                provider, _TRANSIENT_COOLDOWN_SECONDS,
+            )
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Detect any rate-limit signal across the providers we use."""
+    name = type(exc).__name__
+    msg = str(exc) or ""
+    return (
+        "RateLimitError" in name
+        or "RateLimit" in name
+        or "429" in msg
+        or "RESOURCE_EXHAUSTED" in msg
+        or "RateLimitError" in msg
+        or "rate_limit" in msg.lower()
+        or "rate limit" in msg.lower()
+    )
+
+
 class DirectiveInterpretationsEnvelope(BaseModel):
     """Container envelope for LLM structured output parsing."""
 
@@ -89,11 +248,7 @@ def build_fallback_interpretations(
     battery: Optional[BatteryInput] = None,
     reason: str = "LLM unavailable or timed out; safe fallback applied.",
 ) -> List[DirectiveInterpretation]:
-    """Generate safe fallback interpretations for notes using deterministic parser when possible.
-
-    Ensures the service never crashes if the LLM times out or encounters errors.
-    If deterministic parser recognizes directives, they are preserved; otherwise safe no_op is returned.
-    """
+    """Generate safe fallback interpretations for notes using deterministic parser when possible."""
     if battery is not None:
         try:
             from app.llm.parser import extract_directives_deterministically
@@ -133,7 +288,6 @@ def _clean_and_parse_json(content: str, expected_count: int) -> List[DirectiveIn
     """Parse raw LLM string content into a validated list of DirectiveInterpretation objects."""
     cleaned = content.strip()
 
-    # Strip markdown fences if present
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         if lines[0].startswith("```"):
@@ -144,7 +298,6 @@ def _clean_and_parse_json(content: str, expected_count: int) -> List[DirectiveIn
 
     data = json.loads(cleaned)
 
-    # Extract interpretations list from envelope or direct array
     raw_list: List[Any]
     if isinstance(data, dict):
         if "interpretations" in data and isinstance(data["interpretations"], list):
@@ -165,12 +318,10 @@ def _clean_and_parse_json(content: str, expected_count: int) -> List[DirectiveIn
             f"Expected {expected_count} interpretations, but LLM returned {len(raw_list)}."
         )
 
-    # Validate each item through Pydantic
     parsed_items: List[DirectiveInterpretation] = [
         DirectiveInterpretation.model_validate(item) for item in raw_list
     ]
 
-    # Verify and sort note_index order
     parsed_items.sort(key=lambda x: x.note_index)
     for expected_idx, item in enumerate(parsed_items):
         if item.note_index != expected_idx:
@@ -181,18 +332,48 @@ def _clean_and_parse_json(content: str, expected_count: int) -> List[DirectiveIn
     return parsed_items
 
 
-def _clean_credential(val: Optional[str]) -> Optional[str]:
-    """Clean credential strings by stripping whitespace and literal quotes ('' or "")."""
-    if val is None:
-        return None
-    cleaned = str(val).strip()
-    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
-        if len(cleaned) <= 1:
-            return None
-        cleaned = cleaned[1:-1].strip()
-    if not cleaned or cleaned.lower() in ("none", "null", "undefined", "false", '""', "''"):
-        return None
-    return cleaned
+async def _try_one_provider(
+    provider_entry: Dict[str, str],
+    messages: List[Dict[str, str]],
+    temperature: float,
+) -> Tuple[Optional[str], Optional[BaseException], bool]:
+    """Attempt one LLM call on a single provider.
+
+    Returns
+    -------
+    (content, error, is_rate_limit)
+        content        — non-None only on success.
+        error          — the underlying exception on failure.
+        is_rate_limit  — True if the failure was a rate-limit / quota error.
+    """
+    provider = provider_entry["provider"]
+    model = provider_entry["model"]
+    api_key = provider_entry["api_key"]
+    env_var = provider_entry["env_var"]
+
+    os.environ[env_var] = api_key
+
+    try:
+        response = await asyncio.wait_for(
+            litellm.acompletion(
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                temperature=temperature,
+                response_format=DirectiveInterpretationsEnvelope,
+                timeout=STRICT_TIMEOUT_SECONDS,
+            ),
+            timeout=STRICT_TIMEOUT_SECONDS,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            return None, ValueError("LLM returned empty response content."), False
+        return content, None, False
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        return None, e, False
+    except Exception as e:
+        is_rl = _is_rate_limit_error(e)
+        return None, e, is_rl
 
 
 async def interpret_operator_notes(
@@ -200,6 +381,20 @@ async def interpret_operator_notes(
     battery: BatteryInput,
 ) -> List[DirectiveInterpretation]:
     """Parse unstructured operator notes into structured energy optimization directives.
+
+    Provider rotation
+    -----------------
+    Multiple LLM providers are supported in a fixed rotation order so that a
+    transient 429 from one provider automatically falls through to the next:
+
+        GROQ  →  OPENAI  →  GEMINI
+
+    On a transient per-minute rate limit, the offending provider is placed in
+    a short cooldown (~30 s) and the next provider is tried within the same
+    request. On a daily / billing quota exhaustion, the provider is marked as
+    permanently exhausted for the lifetime of this process and is skipped on
+    future requests. The deterministic parser is the last-resort fallback used
+    only when every configured provider has failed in this request.
 
     Parameters
     ----------
@@ -211,54 +406,27 @@ async def interpret_operator_notes(
     Returns
     -------
     list[DirectiveInterpretation]
-        Exactly one validated DirectiveInterpretation per note. If the LLM call times
-        out (> 4.0 seconds) or fails, safe fallback no_op directives are returned.
+        Exactly one validated DirectiveInterpretation per note. If every LLM
+        provider fails or times out, safe fallback no_op directives are
+        returned.
     """
     if not notes:
         return []
 
-    # Check and clean configured API keys
-    gemini_key = _clean_credential(os.getenv("GEMINI_API_KEY")) or _clean_credential(getattr(settings, "GEMINI_API_KEY", None))
-    openai_key = _clean_credential(os.getenv("OPENAI_API_KEY")) or _clean_credential(getattr(settings, "OPENAI_API_KEY", None))
-    groq_key = _clean_credential(os.getenv("GROQ_API_KEY")) or _clean_credential(getattr(settings, "GROQ_API_KEY", None))
-    google_key = _clean_credential(os.getenv("GOOGLE_API_KEY"))
-    anthropic_key = _clean_credential(os.getenv("ANTHROPIC_API_KEY"))
-
-    # Choose model
-    model = os.getenv("LLM_MODEL", getattr(settings, "LLM_MODEL", "gemini/gemini-3.6-flash"))
-
-    # If no key is set anywhere, quickly fallback with informative notice
-    has_any_key = bool(gemini_key or openai_key or groq_key or google_key or anthropic_key)
-    if not has_any_key:
+    chain = _build_provider_chain()
+    if not chain:
         logger.warning(
-            "No LLM API keys detected in environment. Returning safe fallback directives."
+            "No LLM providers available (no API keys configured or all exhausted). "
+            "Returning safe fallback directives."
         )
         return build_fallback_interpretations(
             notes,
             battery=battery,
-            reason="No LLM API key configured; defaulted to safe no_op",
+            reason="No LLM provider available; defaulted to safe no_op",
         )
 
-    # Determine api_key and ensure environment variable is present for litellm
-    api_key: Optional[str] = None
-    if "gemini" in model:
-        api_key = gemini_key or google_key
-        if api_key:
-            os.environ["GEMINI_API_KEY"] = api_key
-    elif "openai" in model or "gpt" in model:
-        api_key = openai_key
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
-    elif "groq" in model:
-        api_key = groq_key
-        if api_key:
-            os.environ["GROQ_API_KEY"] = api_key
-    elif "claude" in model or "anthropic" in model:
-        api_key = anthropic_key
-        if api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
-    else:
-        api_key = gemini_key or openai_key or groq_key or google_key or anthropic_key
+    temperature = getattr(settings, "LLM_TEMPERATURE", 0.0)
+    max_retries_per_provider = int(getattr(settings, "LLM_MAX_RETRIES", 1))
 
     user_prompt = build_user_prompt(notes, battery)
     messages = [
@@ -266,136 +434,101 @@ async def interpret_operator_notes(
         {"role": "user", "content": user_prompt},
     ]
 
+    last_error: Optional[BaseException] = None
+    attempted_providers: List[str] = []
+
     try:
-        max_retries = int(getattr(settings, "LLM_MAX_RETRIES", 2))
-        base_delay = float(getattr(settings, "LLM_RETRY_BASE_DELAY_SECONDS", 5.0))
-        max_delay = float(getattr(settings, "LLM_RETRY_MAX_DELAY_SECONDS", 40.0))
-        temperature = getattr(settings, "LLM_TEMPERATURE", 0.0)
+        for provider_entry in chain:
+            provider = provider_entry["provider"]
+            attempted_providers.append(provider)
+            logger.info(
+                "LLM attempt via provider '%s' (model='%s')",
+                provider, provider_entry["model"],
+            )
 
-        last_error: Optional[Exception] = None
-        content: Optional[str] = None
-        for attempt in range(max_retries + 1):
-            try:
-                # Enforce strict 4.0-second timeout using asyncio.wait_for
-                response = await asyncio.wait_for(
-                    litellm.acompletion(
-                        model=model,
-                        messages=messages,
-                        api_key=api_key,
-                        temperature=temperature,
-                        response_format=DirectiveInterpretationsEnvelope,
-                        timeout=STRICT_TIMEOUT_SECONDS,
-                    ),
-                    timeout=STRICT_TIMEOUT_SECONDS,
-                )
-                content = response.choices[0].message.content
-                if not content:
-                    raise ValueError("LLM returned empty response content.")
-                return _clean_and_parse_json(content, expected_count=len(notes))
-
-            except (asyncio.TimeoutError, TimeoutError) as e:
-                last_error = e
-                logger.warning(
-                    "LLM call exceeded strict %.1fs timeout (attempt %d/%d): %s",
-                    STRICT_TIMEOUT_SECONDS, attempt + 1, max_retries + 1, e,
-                )
-                # Timeouts are not rate-limit driven; do a short backoff and retry
-                # only if we have budget. They are usually transient (cold start).
-                if attempt < max_retries:
-                    await asyncio.sleep(min(base_delay, max_delay))
-                    continue
-                break
-
-            except Exception as e:
-                error_name = type(e).__name__
-                error_message = str(e) or ""
-                # Detect rate limit either from exception type OR from the
-                # Gemini error payload that litellm wraps (the wrapper raises
-                # generic Exception in some paths, so we must inspect the
-                # message body too).
-                is_rate_limit = (
-                    "RateLimitError" in error_name
-                    or "RateLimit" in error_name
-                    or "429" in error_message
-                    or "RESOURCE_EXHAUSTED" in error_message
-                    or "RateLimitError" in error_message
+            for attempt in range(max_retries_per_provider + 1):
+                content, error, is_rl = await _try_one_provider(
+                    provider_entry, messages, temperature,
                 )
 
-                if is_rate_limit:
-                    # Classify: daily-quota exhaustion cannot succeed within the
-                    # same 24h window, so further retries would just burn budget
-                    # and timeout. Skip straight to deterministic fallback.
-                    if _is_daily_quota_exhausted(error_message):
+                if content is not None:
+                    try:
+                        return _clean_and_parse_json(content, expected_count=len(notes))
+                    except (ValueError, json.JSONDecodeError) as parse_err:
+                        last_error = parse_err
                         logger.warning(
-                            "Gemini daily-quota exhaustion detected for model '%s'. "
-                            "Skipping LLM retries and applying deterministic fallback.",
-                            model,
+                            "Provider '%s' returned unparseable JSON (attempt %d): %s",
+                            provider, attempt + 1, parse_err,
                         )
-                        return build_fallback_interpretations(
-                            notes,
-                            battery=battery,
-                            reason=(
-                                "LLM daily quota exhausted (Gemini free tier 20/day); "
-                                "applied deterministic fallback"
-                            ),
-                        )
+                        if attempt < max_retries_per_provider:
+                            await asyncio.sleep(0.5)
+                            continue
+                        break
 
-                    # Transient (per-minute) rate limit: honor the provider's
-                    # retryDelay when present and within our cap.
-                    suggested = _extract_retry_delay_seconds(error_message)
-                    backoff = (
-                        min(suggested, max_delay) if suggested is not None
-                        else min(base_delay * (2 ** attempt), max_delay)
-                    )
-                    last_error = e
+                if error is None:
+                    break
+
+                last_error = error
+
+                if is_rl:
+                    _mark_provider_rate_limited(provider, str(error))
                     logger.warning(
-                        "LLM rate-limited (attempt %d/%d): %s; backing off %.2fs",
-                        attempt + 1, max_retries + 1, e, backoff,
+                        "Provider '%s' hit rate limit (attempt %d/%d): %s",
+                        provider, attempt + 1, max_retries_per_provider + 1, error,
                     )
-                    if attempt < max_retries:
+                    # Respect the per-provider retry budget: if we have more
+                    # attempts available AND this looks like a transient
+                    # (per-minute) limit (not a daily-quota exhaustion), wait
+                    # briefly and retry on the same provider. After the budget
+                    # is exhausted, break out and rotate to the next provider.
+                    if (
+                        attempt < max_retries_per_provider
+                        and not _is_daily_quota_exhausted(str(error))
+                    ):
+                        suggested = _extract_retry_delay_seconds(str(error))
+                        backoff = min(suggested, 2.0) if suggested is not None else 1.0
                         await asyncio.sleep(backoff)
                         continue
-                    # Out of retries on transient 429 → safe fallback
+                    logger.info(
+                        "Provider '%s' exhausted retry budget; rotating.",
+                        provider,
+                    )
+                    break
+
+                if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
                     logger.warning(
-                        "LLM rate-limit retries exhausted (model='%s'). "
-                        "Applying deterministic fallback.", model,
+                        "Provider '%s' timed out (attempt %d/%d): %s",
+                        provider, attempt + 1, max_retries_per_provider + 1, error,
                     )
-                    return build_fallback_interpretations(
-                        notes,
-                        battery=battery,
-                        reason=(
-                            f"LLM extraction error ({error_name}); "
-                            "transient rate-limit retries exhausted"
-                        ),
-                    )
+                    if attempt < max_retries_per_provider:
+                        await asyncio.sleep(1.0)
+                        continue
+                    break
 
-                # Non-rate-limit error (parse, auth, schema, etc.). Treat as
-                # terminal: returning a fallback here avoids spamming the
-                # provider with deterministic-shape requests.
                 logger.warning(
-                    "LLM interpretation error (%s: %s). Applying safe fallback.",
-                    error_name, e,
+                    "Provider '%s' returned non-rate-limit error (%s: %s). Rotating.",
+                    provider, type(error).__name__, error,
                 )
-                return build_fallback_interpretations(
-                    notes,
-                    battery=battery,
-                    reason=f"LLM extraction error ({error_name})",
-                )
+                break
 
-        # Loop exited without a return — last attempt timed out
+        # All providers tried without success. Apply deterministic fallback so
+        # the optimizer still produces a valid schedule.
+        providers_str = ", ".join(attempted_providers) if attempted_providers else "none"
         logger.warning(
-            "LLM call exhausted retries (timeout). Applying safe fallback."
+            "All LLM providers failed (tried: %s). Last error: %s. "
+            "Applying deterministic fallback.",
+            providers_str, last_error,
         )
-        return build_fallback_interpretations(
-            notes,
-            battery=battery,
-            reason=f"LLM request timed out after {max_retries + 1} attempts",
+        # Include the last error's class name in the explanation so callers
+        # can distinguish schema/JSON errors from rate-limit errors.
+        err_class = type(last_error).__name__ if last_error is not None else "Unknown"
+        reason = (
+            f"LLM providers exhausted (tried: {providers_str}, "
+            f"last error: {err_class}); applied deterministic fallback"
         )
+        return build_fallback_interpretations(notes, battery=battery, reason=reason)
 
     except Exception as e:
-        # Defensive guard so the request never 500s. The deterministic parser
-        # below will recognize well-formed operator notes even when the LLM
-        # is unavailable, so the optimizer still produces a valid schedule.
         logger.warning(
             "LLM interpretation unexpected error (%s: %s). Applying safe fallback.",
             type(e).__name__, e,
