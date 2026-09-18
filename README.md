@@ -263,14 +263,14 @@ chmod +x run_docker.sh
 ### 6.2 Manual Docker Commands
 ```bash
 # Build image
-docker build -t gridman:v2 .
+docker build -t gridman:v3 .
 
 # Run container exposing port 8000
 docker run --rm -p 8000:8000 \
   -e GEMINI_API_KEY="${GEMINI_API_KEY}" \
   -e SUPABASE_URL="${SUPABASE_URL}" \
   -e SUPABASE_SERVICE_KEY="${SUPABASE_SERVICE_KEY}" \
-  gridman:v2
+  gridman:v3
 ```
 
 ---
