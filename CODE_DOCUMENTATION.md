@@ -32,13 +32,13 @@ GridMan/
 ### 2.1 Domain Schemas (`app/schemas/contract.py`)
 Provides strict validation rules leveraging Pydantic v2:
 - **`HourInput`**: Validates $h \in [0, 23]$, $\text{demand} \ge 0$, $\text{solar} \ge 0$, and $\text{tariff} \ge 0$.
-- **`BatteryInput`**: Validates battery specs ($\text{capacity} \ge 0$, $\text{initial} \ge 0$, $\text{min\_reserve} \ge 0$, $\text{max\_charge} \ge 0$, $\text{max\_discharge} \ge 0$) and enforces that initial and minimum energy cannot exceed total capacity.
+- **`BatteryInput`**: Validates battery specs (`capacity >= 0`, `initial >= 0`, `min_reserve >= 0`, `max_charge >= 0`, `max_discharge >= 0`) and enforces that initial and minimum energy cannot exceed total capacity.
 - **`DirectiveType`**: Enumeration of supported directives:
   - `solar_reduction`: Decreases solar availability by a fraction `factor` ($0.0 \dots 1.0$) across specific hours.
   - `minimum_battery_reserve`: Elevates battery lower bound to `minimum_energy_kwh` during target hours.
   - `no_charge_window`: Forbids battery charging ($C_h = 0$).
   - `no_discharge_window`: Forbids battery discharging ($D_h = 0$).
-  - `max_grid_window`: Imposes an upper cap on grid import ($G_h \le \text{max\_grid\_kwh}$).
+  - `max_grid_window`: Imposes an upper cap on grid import ($G_h \le G_{\max, h}$).
   - `no_op`: Irrelevant conversational noise or unparseable notes (`applies = False`).
 - **`OptimizeEnergyResponse`**: Contains the full 24-hour dispatch plan, cost summaries, peak grid consumption, and sanitized directive interpretation audit trails.
 
@@ -52,17 +52,17 @@ Acts as a security and integrity firewall between the LLM output and the LP solv
 - **Index Alignment**: Enforces contiguous sorting of `note_index` matching the input list.
 - **Hour Sanitization**: Clamps, filters, and deduplicates hours to valid ints $\in [0, 23]$.
 - **Factor Clamping**: Clamps solar factors strictly to $[0.0, 1.0]$.
-- **Capacity Bounds**: Clamps minimum battery reserves to $[0.0, \text{capacity\_kwh}]$.
+- **Capacity Bounds**: Clamps minimum battery reserves between $0.0$ and `capacity_kwh`.
 - **Deterministic Distractor Neutralization**: For unrecoverable directives or `no_op`, forces `applies = False` and `structured_adjustment = None`.
 
 ### 2.4 Linear Programming Solver (`app/optimizer/solver.py`)
 Formulates and solves the microgrid dispatch problem using `scipy.optimize.linprog` with the **HiGHS** simplex/interior-point backend:
 - **Decision Variables (120 variables)**:
-  - $0 \le G_h \le \infty$ (or max grid cap)
-  - $0 \le S_h \le \text{effective\_solar}_h$
-  - $0 \le C_h \le \text{max\_charge}_h$
-  - $0 \le D_h \le \text{max\_discharge}_h$
-  - $\text{eff\_min\_reserve}_h \le E_h \le \text{capacity}$
+  - $0 \le G_h \le \infty$ (or max grid cap $G_{\max, h}$)
+  - $0 \le S_h \le S_{\max, h}$
+  - $0 \le C_h \le C_{\max, h}$
+  - $0 \le D_h \le D_{\max, h}$
+  - $E_{\min, h} \le E_h \le E_{\text{cap}}$
 - **Equality Constraints Matrix ($A_{eq} \cdot \mathbf{x} = \mathbf{b}_{eq}$)**:
   - **Energy Balance (24 equations)**: $G_h + S_h - C_h + D_h = \text{demand}_h$
   - **Storage Dynamics (24 equations)**:

@@ -20,6 +20,11 @@ GridWise operates on a strict **separation of concerns**:
 - **Optimization Layer**: Exact mathematical programming (SciPy HiGHS Simplex / Interior-Point LP) computes the mathematically optimal 24-hour dispatch schedule.
 - **Observability Layer**: Non-blocking asynchronous telemetry logs runs to Supabase without penalizing HTTP response latency.
 
+### Key Architectural Decision Records (ADRs)
+- [**ADR-001: SciPy HiGHS LP Solver**](docs/decisions/0001-highs-linear-programming-solver.md) — Rationale for continuous Linear Programming over greedy heuristics and LLM arithmetic.
+- [**ADR-002: Deterministic Guardrails Firewall**](docs/decisions/0002-deterministic-guardrails-boundary.md) — Zero-trust isolation boundary between fuzzy LLMs and mathematical solvers.
+- [**ADR-003: Non-Blocking Supabase Telemetry**](docs/decisions/0003-non-blocking-supabase-telemetry.md) — Asynchronous audit persistence via background tasks without response latency penalties.
+
 ```
                    ┌─────────────────────────────────────────┐
                    │    Client (Web Dashboard / Judge CLI)   │
@@ -96,18 +101,22 @@ $$\min_{\mathbf{x}} \sum_{h=0}^{23} \left( \text{tariff}_h \cdot G_h + \epsilon 
    where $\alpha_h \in [0.0, 1.0]$ represents the solar availability factor resulting from operator directives (e.g., panel cleaning, cloud cover).
 
 3. **Battery Storage Dynamics:**
-   $$E_h = E_{h-1} + C_h - D_h \quad \text{for } h \ge 1$$
-   $$E_0 = E_{\text{init}} + C_0 - D_0 \quad \text{for } h = 0$$
+   $$E_0 = E_{\text{init}} + C_0 - D_0 \quad (h = 0)$$
+   $$E_h = E_{h-1} + C_h - D_h \quad \forall h \in \{1, \dots, 23\}$$
 
 4. **Battery Energy Bounds:**
-   $$\max(\text{min\_energy}, \text{reserve}_h) \le E_h \le \text{capacity} \quad \forall h$$
+   $$\max(E_{\text{min}}, R_h) \le E_h \le E_{\text{cap}} \quad \forall h \in \{0, \dots, 23\}$$
+   where $E_{\text{min}}$ is the baseline minimum battery reserve (`minimum_energy_kwh`), $R_h$ is the active reserve threshold for hour $h$ from `minimum_battery_reserve` directives, and $E_{\text{cap}}$ is total battery capacity (`capacity_kwh`).
 
 5. **Charge and Discharge Rate Limits:**
-   $$0 \le C_h \le \begin{cases} 0 & \text{if } h \in \text{no\_charge\_window} \\ \text{max\_charge\_rate} & \text{otherwise} \end{cases}$$
-   $$0 \le D_h \le \begin{cases} 0 & \text{if } h \in \text{no\_discharge\_window} \\ \text{max\_discharge\_rate} & \text{otherwise} \end{cases}$$
+   $$0 \le C_h \le C_{\max, h} \quad \text{and} \quad 0 \le D_h \le D_{\max, h} \quad \forall h \in \{0, \dots, 23\}$$
+   where hourly rate ceilings are governed by physical capabilities and operator blackout windows:
+   $$C_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-charge}} \\ C_{\text{rate}} & \text{otherwise} \end{cases}$$
+   $$D_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-discharge}} \\ D_{\text{rate}} & \text{otherwise} \end{cases}$$
 
 6. **Grid Import Limit (Optional Operator Constraint):**
-   $$0 \le G_h \le \text{max\_grid\_kwh}_h \quad \text{if directive active}$$
+   $$0 \le G_h \le G_{\max, h} \quad \forall h \in \{0, \dots, 23\}$$
+   where $G_{\max, h}$ is the active grid import ceiling during hours subject to a `max_grid_window` directive.
 
 7. **End-of-Day Neutrality:**
    $$E_{23} \ge E_{\text{init}}$$
