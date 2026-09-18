@@ -255,3 +255,112 @@ class TestInterpretOperatorNotes:
             assert res[0].directive_type == DirectiveType.NO_OP
             assert res[0].structured_adjustment is None
             assert "JSONDecodeError" in res[0].explanation
+
+    def test_daily_quota_rate_limit_skips_retries_and_falls_back(
+        self, sample_battery, monkeypatch
+    ):
+        """Gemini free-tier 20/day quota hit -> skip retries, use deterministic fallback."""
+        monkeypatch.setenv("GEMINI_API_KEY", "mock-test-key")
+
+        daily_quota_msg = (
+            "litellm.RateLimitError: geminiException - "
+            '"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", '
+            '"quotaValue": "20" Please retry in 13.970358487s.'
+        )
+        with patch(
+            "litellm.acompletion",
+            new=AsyncMock(side_effect=Exception(daily_quota_msg)),
+        ) as call_mock:
+            res = asyncio.run(
+                interpret_operator_notes(
+                    ["Solar will drop to 20% from 1 PM to 3 PM"], sample_battery
+                )
+            )
+
+        # Daily-quota must be classified as non-retryable: only ONE call
+        assert call_mock.call_count == 1
+        assert len(res) == 1
+        # Deterministic parser recognizes "Solar ... 20% ... 1 PM to 3 PM",
+        # so the fallback rule preserves it instead of returning a no_op.
+        assert res[0].applies is True
+        assert res[0].directive_type == DirectiveType.SOLAR_REDUCTION
+        assert isinstance(res[0].structured_adjustment, SolarAdjustment)
+        assert res[0].structured_adjustment.factor == 0.2
+        assert res[0].structured_adjustment.hours == [13, 14]
+
+    def test_transient_rate_limit_retries_then_succeeds(
+        self, sample_battery, monkeypatch
+    ):
+        """Transient 429 (no daily-quota marker) -> honor retryDelay, then succeed."""
+        monkeypatch.setenv("GEMINI_API_KEY", "mock-test-key")
+
+        transient_msg = (
+            "litellm.RateLimitError: geminiException - "
+            '"status": "RESOURCE_EXHAUSTED" Please retry in 0.05s.'
+        )
+        success_payload = {
+            "interpretations": [
+                {
+                    "note_index": 0,
+                    "applies": True,
+                    "directive_type": "solar_reduction",
+                    "structured_adjustment": {"hours": [13, 14], "factor": 0.2},
+                    "explanation": "Solar drop 20%",
+                }
+            ]
+        }
+        success_response = MagicMock()
+        success_response.choices = [
+            MagicMock(message=MagicMock(content=json.dumps(success_payload)))
+        ]
+
+        call_count = {"n": 0}
+
+        async def flaky_then_ok(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise Exception(transient_msg)
+            return success_response
+
+        with patch("app.core.config.settings.LLM_MAX_RETRIES", 2), \
+             patch("app.core.config.settings.LLM_RETRY_BASE_DELAY_SECONDS", 0.05), \
+             patch("litellm.acompletion", new=flaky_then_ok):
+            res = asyncio.run(
+                interpret_operator_notes(["Solar drop to 20% from 1 PM to 3 PM."], sample_battery)
+            )
+
+        assert call_count["n"] == 2, "Should retry exactly once after transient 429"
+        assert len(res) == 1
+        assert res[0].applies is True
+        assert res[0].directive_type == DirectiveType.SOLAR_REDUCTION
+
+    def test_transient_rate_limit_exhausts_retries_and_falls_back(
+        self, sample_battery, monkeypatch
+    ):
+        """Persistent transient 429 -> after max retries, fall back deterministically."""
+        monkeypatch.setenv("GEMINI_API_KEY", "mock-test-key")
+
+        transient_msg = (
+            "litellm.RateLimitError: geminiException - "
+            '"status": "RESOURCE_EXHAUSTED" Please retry in 0.05s.'
+        )
+        with patch(
+            "litellm.acompletion",
+            new=AsyncMock(side_effect=Exception(transient_msg)),
+        ) as call_mock, \
+             patch("app.core.config.settings.LLM_MAX_RETRIES", 1), \
+             patch("app.core.config.settings.LLM_RETRY_BASE_DELAY_SECONDS", 0.02):
+            res = asyncio.run(
+                interpret_operator_notes(
+                    ["Meeting at 5 PM about library hours"], sample_battery
+                )
+            )
+
+        # 1 initial + 1 retry = 2 calls before giving up
+        assert call_mock.call_count == 2
+        assert len(res) == 1
+        # "library" is a deterministic-parser distractor -> falls to no_op
+        assert res[0].applies is False
+        assert res[0].directive_type == DirectiveType.NO_OP
+        assert "rate-limit" in res[0].explanation.lower() or \
+               "RateLimit" in res[0].explanation

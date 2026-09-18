@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import litellm
@@ -30,6 +31,48 @@ litellm.drop_params = True
 logger = logging.getLogger("gridwise.llm.interpreter")
 
 STRICT_TIMEOUT_SECONDS: float = 4.0
+
+# Retry strategy for transient rate limits (HTTP 429).
+# Note: Gemini free tier limit is only 20 requests/day per model; once that daily
+# quota is exhausted, retries cannot succeed within the same 24h window. The
+# interpreter therefore distinguishes a per-minute/per-second "burst" 429
+# (retryable, retryDelay is sub-minute) from a daily-quota 429 (non-retryable),
+# and falls back to the deterministic parser instead of spinning.
+_DAILY_QUOTA_MARKERS = (
+    "GenerateRequestsPerDayPerProjectPerModel",
+    "PerDayPerProjectPerModel-FreeTier",
+    "free_tier_requests",
+)
+
+
+def _is_daily_quota_exhausted(message: str) -> bool:
+    """Detect Gemini free-tier daily-quota exhaustion (non-retryable within 24h)."""
+    if not message:
+        return False
+    return any(marker in message for marker in _DAILY_QUOTA_MARKERS)
+
+
+def _extract_retry_delay_seconds(message: str) -> Optional[float]:
+    """Extract retryDelay seconds from the Gemini rate-limit error message.
+
+    Looks for the `RetryInfo.retryDelay` in the structured error response. The
+    field is emitted as e.g. `\"retryDelay\": \"32s\"` or `\"32.0225675s\"`.
+    """
+    if not message:
+        return None
+    match = re.search(r"retryDelay\"\s*:\s*\"\s*([0-9]+(?:\.[0-9]+)?)\s*s", message)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    match = re.search(r"Please retry in\s+([0-9]+(?:\.[0-9]+)?)\s*s", message)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 class DirectiveInterpretationsEnvelope(BaseModel):
@@ -224,40 +267,138 @@ async def interpret_operator_notes(
     ]
 
     try:
-        # Enforce strict 4.0-second timeout using asyncio.wait_for
-        response = await asyncio.wait_for(
-            litellm.acompletion(
-                model=model,
-                messages=messages,
-                api_key=api_key,
-                temperature=getattr(settings, "LLM_TEMPERATURE", 0.0),
-                response_format=DirectiveInterpretationsEnvelope,
-                timeout=STRICT_TIMEOUT_SECONDS,
-            ),
-            timeout=STRICT_TIMEOUT_SECONDS,
-        )
+        max_retries = int(getattr(settings, "LLM_MAX_RETRIES", 2))
+        base_delay = float(getattr(settings, "LLM_RETRY_BASE_DELAY_SECONDS", 5.0))
+        max_delay = float(getattr(settings, "LLM_RETRY_MAX_DELAY_SECONDS", 40.0))
+        temperature = getattr(settings, "LLM_TEMPERATURE", 0.0)
 
-        content: Optional[str] = response.choices[0].message.content
-        if not content:
-            raise ValueError("LLM returned empty response content.")
+        last_error: Optional[Exception] = None
+        content: Optional[str] = None
+        for attempt in range(max_retries + 1):
+            try:
+                # Enforce strict 4.0-second timeout using asyncio.wait_for
+                response = await asyncio.wait_for(
+                    litellm.acompletion(
+                        model=model,
+                        messages=messages,
+                        api_key=api_key,
+                        temperature=temperature,
+                        response_format=DirectiveInterpretationsEnvelope,
+                        timeout=STRICT_TIMEOUT_SECONDS,
+                    ),
+                    timeout=STRICT_TIMEOUT_SECONDS,
+                )
+                content = response.choices[0].message.content
+                if not content:
+                    raise ValueError("LLM returned empty response content.")
+                return _clean_and_parse_json(content, expected_count=len(notes))
 
-        return _clean_and_parse_json(content, expected_count=len(notes))
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                last_error = e
+                logger.warning(
+                    "LLM call exceeded strict %.1fs timeout (attempt %d/%d): %s",
+                    STRICT_TIMEOUT_SECONDS, attempt + 1, max_retries + 1, e,
+                )
+                # Timeouts are not rate-limit driven; do a short backoff and retry
+                # only if we have budget. They are usually transient (cold start).
+                if attempt < max_retries:
+                    await asyncio.sleep(min(base_delay, max_delay))
+                    continue
+                break
 
-    except (asyncio.TimeoutError, TimeoutError) as e:
+            except Exception as e:
+                error_name = type(e).__name__
+                error_message = str(e) or ""
+                # Detect rate limit either from exception type OR from the
+                # Gemini error payload that litellm wraps (the wrapper raises
+                # generic Exception in some paths, so we must inspect the
+                # message body too).
+                is_rate_limit = (
+                    "RateLimitError" in error_name
+                    or "RateLimit" in error_name
+                    or "429" in error_message
+                    or "RESOURCE_EXHAUSTED" in error_message
+                    or "RateLimitError" in error_message
+                )
+
+                if is_rate_limit:
+                    # Classify: daily-quota exhaustion cannot succeed within the
+                    # same 24h window, so further retries would just burn budget
+                    # and timeout. Skip straight to deterministic fallback.
+                    if _is_daily_quota_exhausted(error_message):
+                        logger.warning(
+                            "Gemini daily-quota exhaustion detected for model '%s'. "
+                            "Skipping LLM retries and applying deterministic fallback.",
+                            model,
+                        )
+                        return build_fallback_interpretations(
+                            notes,
+                            battery=battery,
+                            reason=(
+                                "LLM daily quota exhausted (Gemini free tier 20/day); "
+                                "applied deterministic fallback"
+                            ),
+                        )
+
+                    # Transient (per-minute) rate limit: honor the provider's
+                    # retryDelay when present and within our cap.
+                    suggested = _extract_retry_delay_seconds(error_message)
+                    backoff = (
+                        min(suggested, max_delay) if suggested is not None
+                        else min(base_delay * (2 ** attempt), max_delay)
+                    )
+                    last_error = e
+                    logger.warning(
+                        "LLM rate-limited (attempt %d/%d): %s; backing off %.2fs",
+                        attempt + 1, max_retries + 1, e, backoff,
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(backoff)
+                        continue
+                    # Out of retries on transient 429 → safe fallback
+                    logger.warning(
+                        "LLM rate-limit retries exhausted (model='%s'). "
+                        "Applying deterministic fallback.", model,
+                    )
+                    return build_fallback_interpretations(
+                        notes,
+                        battery=battery,
+                        reason=(
+                            f"LLM extraction error ({error_name}); "
+                            "transient rate-limit retries exhausted"
+                        ),
+                    )
+
+                # Non-rate-limit error (parse, auth, schema, etc.). Treat as
+                # terminal: returning a fallback here avoids spamming the
+                # provider with deterministic-shape requests.
+                logger.warning(
+                    "LLM interpretation error (%s: %s). Applying safe fallback.",
+                    error_name, e,
+                )
+                return build_fallback_interpretations(
+                    notes,
+                    battery=battery,
+                    reason=f"LLM extraction error ({error_name})",
+                )
+
+        # Loop exited without a return — last attempt timed out
         logger.warning(
-            "LLM call exceeded strict %.1fs timeout: %s", STRICT_TIMEOUT_SECONDS, e
+            "LLM call exhausted retries (timeout). Applying safe fallback."
         )
         return build_fallback_interpretations(
             notes,
             battery=battery,
-            reason=f"LLM request timed out after {STRICT_TIMEOUT_SECONDS}s",
+            reason=f"LLM request timed out after {max_retries + 1} attempts",
         )
 
     except Exception as e:
+        # Defensive guard so the request never 500s. The deterministic parser
+        # below will recognize well-formed operator notes even when the LLM
+        # is unavailable, so the optimizer still produces a valid schedule.
         logger.warning(
-            "LLM interpretation error (%s: %s). Applying safe fallback.",
-            type(e).__name__,
-            e,
+            "LLM interpretation unexpected error (%s: %s). Applying safe fallback.",
+            type(e).__name__, e,
         )
         return build_fallback_interpretations(
             notes,

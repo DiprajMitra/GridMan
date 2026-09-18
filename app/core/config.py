@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gemini/gemini-3.6-flash"
     LLM_TIMEOUT_SECONDS: float = 4.0
     LLM_TEMPERATURE: float = 0.0
-    LLM_MAX_RETRIES: int = 0
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BASE_DELAY_SECONDS: float = 5.0
+    LLM_RETRY_MAX_DELAY_SECONDS: float = 40.0
 
     # API Keys
     GEMINI_API_KEY: Optional[str] = None
