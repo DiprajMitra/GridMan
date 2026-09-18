@@ -43,13 +43,37 @@ class DirectiveInterpretationsEnvelope(BaseModel):
 
 def build_fallback_interpretations(
     notes: List[str],
+    battery: Optional[BatteryInput] = None,
     reason: str = "LLM unavailable or timed out; safe fallback applied.",
 ) -> List[DirectiveInterpretation]:
-    """Generate safe no_op fallback interpretations for all notes.
+    """Generate safe fallback interpretations for notes using deterministic parser when possible.
 
     Ensures the service never crashes if the LLM times out or encounters errors.
-    All items are marked applies=False with directive_type='no_op' and structured_adjustment=None.
+    If deterministic parser recognizes directives, they are preserved; otherwise safe no_op is returned.
     """
+    if battery is not None:
+        try:
+            from app.llm.parser import extract_directives_deterministically
+
+            parsed = extract_directives_deterministically(notes, battery.capacity_kwh)
+            results: List[DirectiveInterpretation] = []
+            for idx, item in enumerate(parsed):
+                if item.applies:
+                    results.append(item)
+                else:
+                    results.append(
+                        DirectiveInterpretation(
+                            note_index=idx,
+                            applies=False,
+                            directive_type=DirectiveType.NO_OP,
+                            structured_adjustment=None,
+                            explanation=f"{reason} (Original note: {notes[idx][:80]})",
+                        )
+                    )
+            return results
+        except Exception as e:
+            logger.warning("Deterministic fallback parsing error: %s", e)
+
     return [
         DirectiveInterpretation(
             note_index=idx,
@@ -167,7 +191,9 @@ async def interpret_operator_notes(
             "No LLM API keys detected in environment. Returning safe fallback directives."
         )
         return build_fallback_interpretations(
-            notes, reason="No LLM API key configured; defaulted to safe no_op"
+            notes,
+            battery=battery,
+            reason="No LLM API key configured; defaulted to safe no_op",
         )
 
     # Determine api_key and ensure environment variable is present for litellm
@@ -223,6 +249,7 @@ async def interpret_operator_notes(
         )
         return build_fallback_interpretations(
             notes,
+            battery=battery,
             reason=f"LLM request timed out after {STRICT_TIMEOUT_SECONDS}s",
         )
 
@@ -234,6 +261,7 @@ async def interpret_operator_notes(
         )
         return build_fallback_interpretations(
             notes,
+            battery=battery,
             reason=f"LLM extraction error ({type(e).__name__})",
         )
 
