@@ -93,34 +93,69 @@ $$\min_{\mathbf{x}} \sum_{h=0}^{23} \left( \text{tariff}_h \cdot G_h + \epsilon 
 
 ### 2.3 System Constraints
 
-1. **Hourly Energy Balance:**
-   $$G_h + S_h + D_h = \text{demand}_h + C_h \quad \forall h \in \{0, \dots, 23\}$$
+**1. Hourly Energy Balance:**
 
-2. **Solar Resource Bounds:**
-   $$0 \le S_h \le \text{solar}_h \cdot \alpha_h$$
-   where $\alpha_h \in [0.0, 1.0]$ represents the solar availability factor resulting from operator directives (e.g., panel cleaning, cloud cover).
+$$
+G_h + S_h + D_h = \text{demand}_h + C_h \quad \forall h \in \{0, \dots, 23\}
+$$
 
-3. **Battery Storage Dynamics:**
-   $$E_0 = E_{\text{init}} + C_0 - D_0 \quad (h = 0)$$
-   $$E_h = E_{h-1} + C_h - D_h \quad \forall h \in \{1, \dots, 23\}$$
+**2. Solar Resource Bounds:**
 
-4. **Battery Energy Bounds:**
-   $$\max(E_{\text{min}}, R_h) \le E_h \le E_{\text{cap}} \quad \forall h \in \{0, \dots, 23\}$$
-   where $E_{\text{min}}$ is the baseline minimum battery reserve (`minimum_energy_kwh`), $R_h$ is the active reserve threshold for hour $h$ from `minimum_battery_reserve` directives, and $E_{\text{cap}}$ is total battery capacity (`capacity_kwh`).
+$$
+0 \le S_h \le \text{solar}_h \cdot \alpha_h
+$$
 
-5. **Charge and Discharge Rate Limits:**
-   $$0 \le C_h \le C_{\max, h} \quad \text{and} \quad 0 \le D_h \le D_{\max, h} \quad \forall h \in \{0, \dots, 23\}$$
-   where hourly rate ceilings are governed by physical capabilities and operator blackout windows:
-   $$C_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-charge}} \\ C_{\text{rate}} & \text{otherwise} \end{cases}$$
-   $$D_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-discharge}} \\ D_{\text{rate}} & \text{otherwise} \end{cases}$$
+where $\alpha_h \in [0.0, 1.0]$ represents the solar availability factor resulting from operator directives (e.g., panel cleaning, cloud cover).
 
-6. **Grid Import Limit (Optional Operator Constraint):**
-   $$0 \le G_h \le G_{\max, h} \quad \forall h \in \{0, \dots, 23\}$$
-   where $G_{\max, h}$ is the active grid import ceiling during hours subject to a `max_grid_window` directive.
+**3. Battery Storage Dynamics:**
 
-7. **End-of-Day Neutrality:**
-   $$E_{23} \ge E_{\text{init}}$$
-   Prevents artificial depletion of battery reserves to ensure the campus remains resilient for the subsequent operating day.
+$$
+E_0 = E_{\text{init}} + C_0 - D_0 \quad (h = 0)
+$$
+
+$$
+E_h = E_{h-1} + C_h - D_h \quad \forall h \in \{1, \dots, 23\}
+$$
+
+**4. Battery Energy Bounds:**
+
+$$
+\max(E_{\text{min}}, R_h) \le E_h \le E_{\text{cap}} \quad \forall h \in \{0, \dots, 23\}
+$$
+
+where $E_{\text{min}}$ is the baseline minimum battery reserve (`minimum_energy_kwh`), $R_h$ is the active reserve threshold for hour $h$ from `minimum_battery_reserve` directives, and $E_{\text{cap}}$ is total battery capacity (`capacity_kwh`).
+
+**5. Charge and Discharge Rate Limits:**
+
+$$
+0 \le C_h \le C_{\max, h} \quad \text{and} \quad 0 \le D_h \le D_{\max, h} \quad \forall h \in \{0, \dots, 23\}
+$$
+
+where hourly rate ceilings are governed by physical capabilities and operator blackout windows:
+
+$$
+C_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-charge}} \\\\ C_{\text{rate}} & \text{otherwise} \end{cases}
+$$
+
+$$
+D_{\max, h} = \begin{cases} 0 & \text{if } h \in \mathcal{W}_{\text{no-discharge}} \\\\ D_{\text{rate}} & \text{otherwise} \end{cases}
+$$
+
+**6. Grid Import Limit (Optional Operator Constraint):**
+
+$$
+0 \le G_h \le G_{\max, h} \quad \forall h \in \{0, \dots, 23\}
+$$
+
+where $G_{\max, h}$ is the active grid import ceiling during hours subject to a `max_grid_window` directive.
+
+**7. End-of-Day Neutrality:**
+
+$$
+E_{23} \ge E_{\text{init}}
+$$
+
+Prevents artificial depletion of battery reserves to ensure the campus remains resilient for the subsequent operating day.
 
 ---
 
